@@ -1,6 +1,7 @@
 import express from "express";
 import db from "../db/connection.js";
 import { generateCustomerToken } from "../utils/tokenGenerator.js";
+import { sendTokenEmail } from '../mailer.js';
 
 const router = express.Router();
 
@@ -52,6 +53,13 @@ router.post("/", async (req, res) => {
       if (err) {
         console.error(err);
         return res.status(500).json({ message: "Database error", error: err });
+      }
+
+      // Send email if customer has an email address
+      if (email) {
+        sendTokenEmail(email, fullName, bookingToken)
+          .then(() => console.log('Token email sent to', email))
+          .catch((err) => console.error('Email sending failed:', err));
       }
 
       res.status(201).json({ 
@@ -155,62 +163,67 @@ router.put("/archive/:customerId", (req, res) => {
   });
 });
 
-// Delete customer (with all related data)
+// delete customer
 router.delete("/delete/:customerId", (req, res) => {
   const { customerId } = req.params;
 
-  // Start transaction
-  db.beginTransaction((err) => {
-    if (err) {
-      return res.status(500).json({ message: "Database error" });
-    }
+  db.getConnection((err, connection) => {
+    if (err) return res.status(500).json({ message: "Database error" });
 
-    // Delete payments
-    db.query("DELETE FROM payments WHERE customerId = ?", [customerId], (err1) => {
-      if (err1) {
-        return db.rollback(() => {
-          res.status(500).json({ message: "Error deleting payments" });
-        });
+    connection.beginTransaction((err) => {
+      if (err) {
+        connection.release();
+        return res.status(500).json({ message: "Database error" });
       }
 
-      // Delete bookings
-      db.query("DELETE FROM bookings WHERE customerId = ?", [customerId], (err2) => {
-        if (err2) {
-          return db.rollback(() => {
-            res.status(500).json({ message: "Error deleting bookings" });
+      connection.query("DELETE FROM payments WHERE customerId = ?", [customerId], (err1) => {
+        if (err1) {
+          return connection.rollback(() => {
+            connection.release();
+            res.status(500).json({ message: "Error deleting payments" });
           });
         }
 
-        // Delete customer
-        db.query("DELETE FROM customers WHERE customerId = ?", [customerId], (err3, result) => {
-          if (err3) {
-            return db.rollback(() => {
-              res.status(500).json({ message: "Error deleting customer" });
+        connection.query("DELETE FROM bookings WHERE customerId = ?", [customerId], (err2) => {
+          if (err2) {
+            return connection.rollback(() => {
+              connection.release();
+              res.status(500).json({ message: "Error deleting bookings" });
             });
           }
 
-          if (result.affectedRows === 0) {
-            return db.rollback(() => {
-              res.status(404).json({ message: "Customer not found" });
-            });
-          }
-
-          // Commit transaction
-          db.commit((commitErr) => {
-            if (commitErr) {
-              return db.rollback(() => {
-                res.status(500).json({ message: "Error committing transaction" });
+          connection.query("DELETE FROM customers WHERE customerId = ?", [customerId], (err3, result) => {
+            if (err3) {
+              return connection.rollback(() => {
+                connection.release();
+                res.status(500).json({ message: "Error deleting customer" });
               });
             }
 
-            res.json({ message: "Customer and all related data deleted successfully" });
+            if (result.affectedRows === 0) {
+              return connection.rollback(() => {
+                connection.release();
+                res.status(404).json({ message: "Customer not found" });
+              });
+            }
+
+            connection.commit((commitErr) => {
+              if (commitErr) {
+                return connection.rollback(() => {
+                  connection.release();
+                  res.status(500).json({ message: "Error committing transaction" });
+                });
+              }
+
+              connection.release();
+              res.json({ message: "Customer and all related data deleted successfully" });
+            });
           });
         });
       });
     });
   });
 });
-
 // ========================
 // GET ALL CUSTOMERS
 // ========================
