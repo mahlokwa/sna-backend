@@ -1,3 +1,4 @@
+import dns from "dns";
 import express from "express";
 import cors from "cors";
 import customersRoute from "./routes/customers.js";
@@ -5,6 +6,7 @@ import staffRoutes from "./routes/staff.js";
 import paymentRoutes from "./routes/payments.js"; 
 import bookingsRoutes from "./routes/bookings.js";
 
+dns.setDefaultResultOrder("ipv4first");
 const app = express();
 app.use(cors());
 app.use(express.json());
