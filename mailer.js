@@ -6,7 +6,7 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 
 export const sendTokenEmail = async (toEmail, fullName, bookingToken) => {
   await resend.emails.send({
-    from: 'SNA Driving School - No Reply <onboarding@resend.dev>',
+    from: 'SNA Driving School - No Reply <noreply@snadriving.co.za>',
     to: toEmail,
     subject: 'Your SNA Driving School Booking Token',
     html: `
