@@ -136,11 +136,19 @@ router.post("/create", (req, res) => {
     }
 
     // Assume 1-hour lesson (you can make this dynamic later)
-    const startTime = bookingTime;
-    const [hours, minutes] = bookingTime.split(':');
-    const endHour = (parseInt(hours) + 1).toString().padStart(2, '0');
-    const endTime = `${endHour}:${minutes}`;
+    // Convert 12-hour to 24-hour format for MySQL
+const convertTo24Hour = (time12h) => {
+  const [time, modifier] = time12h.split(' ');
+  let [hours, minutes] = time.split(':');
+  if (modifier === 'AM' && hours === '12') hours = '00';
+  if (modifier === 'PM' && hours !== '12') hours = String(parseInt(hours) + 12);
+  return `${hours.padStart(2, '0')}:${minutes}`;
+};
 
+const startTime = convertTo24Hour(bookingTime);
+const [hours, minutes] = startTime.split(':');
+const endHour = (parseInt(hours) + 1).toString().padStart(2, '0');
+const endTime = `${endHour}:${minutes}`;
     // Create booking
     const insertSql = `
       INSERT INTO bookings 
