@@ -129,63 +129,78 @@ router.post("/create", (req, res) => {
     const lessonsUnlocked = Math.floor(customer.totalTowardLessons / customer.pricePerLesson);
     const lessonsRemaining = lessonsUnlocked - customer.lessonsUsed;
 
-    if (lessonsRemaining <= 0) {
+   if (lessonsRemaining <= 0) {
       return res.status(403).json({ 
         message: "No lessons remaining. Please make a payment to unlock more lessons." 
       });
     }
 
-    // Assume 1-hour lesson (you can make this dynamic later)
-    // Convert 12-hour to 24-hour format for MySQL
-const convertTo24Hour = (time12h) => {
-  const [time, modifier] = time12h.split(' ');
-  let [hours, minutes] = time.split(':');
-  if (modifier === 'AM' && hours === '12') hours = '00';
-  if (modifier === 'PM' && hours !== '12') hours = String(parseInt(hours) + 12);
-  return `${hours.padStart(2, '0')}:${minutes}`;
-};
+    // ADD THIS - Check if slot is already full (max 2 bookings per slot)
+    const convertTo24Hour = (time12h) => {
+      const [time, modifier] = time12h.split(' ');
+      let [hours, minutes] = time.split(':');
+      if (modifier === 'AM' && hours === '12') hours = '00';
+      if (modifier === 'PM' && hours !== '12') hours = String(parseInt(hours) + 12);
+      return `${hours.padStart(2, '0')}:${minutes}`;
+    };
 
-const startTime = convertTo24Hour(bookingTime);
-const [hours, minutes] = startTime.split(':');
-const endHour = (parseInt(hours) + 1).toString().padStart(2, '0');
-const endTime = `${endHour}:${minutes}`;
-    // Create booking
-    const insertSql = `
-      INSERT INTO bookings 
-      (customerId, lessonDate, startTime, endTime, status)
-      VALUES (?, ?, ?, ?, 'booked')
+    const startTime = convertTo24Hour(bookingTime);
+    const [hours, minutes] = startTime.split(':');
+    const totalMinutes = parseInt(hours) * 60 + parseInt(minutes) + 30;
+    const endHour = Math.floor(totalMinutes / 60).toString().padStart(2, '0');
+    const endMin = (totalMinutes % 60).toString().padStart(2, '0');
+    const endTime = `${endHour}:${endMin}`;
+
+    const slotCheckSql = `
+      SELECT COUNT(*) as bookingCount 
+      FROM bookings 
+      WHERE lessonDate = ? AND startTime = ? AND status != 'cancelled'
     `;
 
-    db.query(
-      insertSql,
-      [customerId, bookingDate, startTime, endTime],
-      (err, result) => {
-        if (err) {
-          console.error("Database error:", err);
-          return res.status(500).json({ 
-            message: "Error creating booking", 
-            error: err.message 
+    db.query(slotCheckSql, [bookingDate, startTime], (slotErr, slotResults) => {
+      if (slotErr) return res.status(500).json({ message: "Error checking slot availability" });
+      
+      if (slotResults[0].bookingCount >= 2) {
+        return res.status(403).json({ message: "This time slot is fully booked. Please choose another time." });
+      }
+
+      // Create booking
+      const insertSql = `
+        INSERT INTO bookings 
+        (customerId, lessonDate, startTime, endTime, status)
+        VALUES (?, ?, ?, ?, 'booked')
+      `;
+
+      db.query(
+        insertSql,
+        [customerId, bookingDate, startTime, endTime],
+        (err, result) => {
+          if (err) {
+            console.error("Database error:", err);
+            return res.status(500).json({ 
+              message: "Error creating booking", 
+              error: err.message 
+            });
+          }
+
+          // Update lessons used
+          const updateSql = `UPDATE customers SET lessonsUsed = lessonsUsed + 1 WHERE customerId = ?`;
+          db.query(updateSql, [customerId], (updateErr) => {
+            if (updateErr) {
+              console.error("Error updating lessons used:", updateErr);
+            }
+          });
+
+          res.status(201).json({
+            message: "Booking created successfully",
+            bookingId: result.insertId,
+            status: "booked"
           });
         }
-
-        // Update lessons used
-        const updateSql = `UPDATE customers SET lessonsUsed = lessonsUsed + 1 WHERE customerId = ?`;
-        db.query(updateSql, [customerId], (updateErr) => {
-          if (updateErr) {
-            console.error("Error updating lessons used:", updateErr);
-          }
-        });
-
-        res.status(201).json({
-          message: "Booking created successfully",
-          bookingId: result.insertId,
-          status: "booked"
-        });
-      }
-    );
+      );
+    });
   });
 });
-
 // ========================
 // Get All Bookings (for staff)
 // ========================
