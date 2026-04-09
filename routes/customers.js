@@ -21,7 +21,8 @@ router.post("/", async (req, res) => {
     totalLessons,
     pricePerLesson,
     emergency_contact_name,
-    emergency_contact_phone
+    emergency_contact_phone,
+    paymentStatus
   } = req.body;
 
   const bookingToken = generateCustomerToken();
@@ -54,7 +55,7 @@ router.post("/", async (req, res) => {
         console.error(err);
         return res.status(500).json({ message: "Database error", error: err });
       }
-      
+
        const customerId = results.insertId;
 
       // Auto-record payment if customer paid in full
