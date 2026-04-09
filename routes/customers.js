@@ -54,7 +54,24 @@ router.post("/", async (req, res) => {
         console.error(err);
         return res.status(500).json({ message: "Database error", error: err });
       }
+      
+       const customerId = results.insertId;
 
+      // Auto-record payment if customer paid in full
+      if (paymentStatus === 'paid') {
+        const paymentSql = `
+          INSERT INTO payments (customerId, amountPaid, amountTowardLessons, amountTowardLearners, paymentDate, recordedBy)
+          VALUES (?, ?, ?, ?, CURDATE(), 'System - Paid in Full')
+        `;
+        db.query(paymentSql, [
+          customerId,
+          packagePrice,
+          drivingLessonsPrice,
+          learnersFee
+        ], (payErr) => {
+          if (payErr) console.error('Error recording full payment:', payErr);
+        });
+      }
       // Send email if customer has an email address
       if (email) {
         sendTokenEmail(email, fullName, bookingToken)
