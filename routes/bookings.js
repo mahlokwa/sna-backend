@@ -202,6 +202,50 @@ router.post("/create", (req, res) => {
   });
 });
 
+// ========================
+// Get Day Availability + Customer Booking Check
+// ========================
+router.get("/day-availability", (req, res) => {
+  const { lessonDate, customerId } = req.query;
+
+  if (!lessonDate) return res.status(400).json({ message: "lessonDate is required" });
+
+  // Get all bookings for this day grouped by slot
+  const slotSql = `
+    SELECT startTime, COUNT(*) as bookingCount
+    FROM bookings
+    WHERE lessonDate = ? AND status != 'cancelled'
+    GROUP BY startTime
+  `;
+
+  // Check if this customer already has a booking today
+  const customerSql = `
+    SELECT COUNT(*) as count FROM bookings
+    WHERE lessonDate = ? AND customerId = ? AND status != 'cancelled'
+  `;
+
+  db.query(slotSql, [lessonDate], (err, slotResults) => {
+    if (err) return res.status(500).json({ message: "Error fetching slot availability" });
+
+    // Build availability map — true = has space, false = full (2 bookings)
+    const slotAvailability = {};
+    slotResults.forEach(row => {
+      const time = row.startTime.substring(0, 5); // "07:00"
+      slotAvailability[time] = row.bookingCount < 2;
+    });
+
+    if (!customerId) {
+      return res.json({ slotAvailability, customerHasBooking: false });
+    }
+
+    db.query(customerSql, [lessonDate, customerId], (custErr, custResults) => {
+      if (custErr) return res.status(500).json({ message: "Error checking customer booking" });
+      const customerHasBooking = custResults[0].count > 0;
+      res.json({ slotAvailability, customerHasBooking });
+    });
+  });
+});
+
 // Get available trucks for a specific date and time slot
 router.get("/available-trucks", (req, res) => {
   const { lessonDate, startTime } = req.query;
