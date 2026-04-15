@@ -89,13 +89,14 @@ router.post("/create", (req, res) => {
     customerId,
     bookingDate,
     bookingTime,
+    truckId,        // ADD THIS - coming from frontend
     lessonType,
     specialRequests
   } = req.body;
 
-  if (!customerId || !bookingDate || !bookingTime) {
+  if (!customerId || !bookingDate || !bookingTime || !truckId) {
     return res.status(400).json({ 
-      message: "Missing required fields: customerId, bookingDate, bookingTime" 
+      message: "Missing required fields: customerId, bookingDate, bookingTime, truckId" 
     });
   }
 
@@ -113,29 +114,20 @@ router.post("/create", (req, res) => {
   `;
 
   db.query(checkSql, [customerId], (err, results) => {
-    if (err) {
-      console.error("Database error:", err);
-      return res.status(500).json({ 
-        message: "Error checking lesson availability", 
-        error: err.message 
-      });
-    }
-
-    if (results.length === 0) {
-      return res.status(404).json({ message: "Customer not found" });
-    }
+    if (err) return res.status(500).json({ message: "Error checking lesson availability", error: err.message });
+    if (results.length === 0) return res.status(404).json({ message: "Customer not found" });
 
     const customer = results[0];
     const lessonsUnlocked = Math.floor(customer.totalTowardLessons / customer.pricePerLesson);
     const lessonsRemaining = lessonsUnlocked - customer.lessonsUsed;
 
-   if (lessonsRemaining <= 0) {
+    if (lessonsRemaining <= 0) {
       return res.status(403).json({ 
         message: "No lessons remaining. Please make a payment to unlock more lessons." 
       });
     }
 
-    // ADD THIS - Check if slot is already full (max 2 bookings per slot)
+    // Convert time to 24hr
     const convertTo24Hour = (time12h) => {
       const [time, modifier] = time12h.split(' ');
       let [hours, minutes] = time.split(':');
@@ -151,44 +143,52 @@ router.post("/create", (req, res) => {
     const endMin = (totalMinutes % 60).toString().padStart(2, '0');
     const endTime = `${endHour}:${endMin}`;
 
-    const slotCheckSql = `
-      SELECT COUNT(*) as bookingCount 
+    // CHECK 1 - Has customer already booked on this day?
+    const sameDayCheckSql = `
+      SELECT COUNT(*) as count 
       FROM bookings 
-      WHERE lessonDate = ? AND startTime = ? AND status != 'cancelled'
+      WHERE customerId = ? AND lessonDate = ? AND status != 'cancelled'
     `;
 
-    db.query(slotCheckSql, [bookingDate, startTime], (slotErr, slotResults) => {
-      if (slotErr) return res.status(500).json({ message: "Error checking slot availability" });
-      
-      if (slotResults[0].bookingCount >= 2) {
-        return res.status(403).json({ message: "This time slot is fully booked. Please choose another time." });
+    db.query(sameDayCheckSql, [customerId, bookingDate], (dayErr, dayResults) => {
+      if (dayErr) return res.status(500).json({ message: "Error checking daily booking limit" });
+
+      if (dayResults[0].count > 0) {
+        return res.status(403).json({ 
+          message: "You already have a booking on this day. Only one booking per day is allowed." 
+        });
       }
 
-      // Create booking
-      const insertSql = `
-        INSERT INTO bookings 
-        (customerId, lessonDate, startTime, endTime, status)
-        VALUES (?, ?, ?, ?, 'booked')
+      // CHECK 2 - Is the selected truck already booked for this slot?
+      const truckCheckSql = `
+        SELECT COUNT(*) as count 
+        FROM bookings 
+        WHERE lessonDate = ? AND startTime = ? AND truck_id = ? AND status != 'cancelled'
       `;
 
-      db.query(
-        insertSql,
-        [customerId, bookingDate, startTime, endTime],
-        (err, result) => {
-          if (err) {
-            console.error("Database error:", err);
-            return res.status(500).json({ 
-              message: "Error creating booking", 
-              error: err.message 
-            });
-          }
+      db.query(truckCheckSql, [bookingDate, startTime, truckId], (truckErr, truckResults) => {
+        if (truckErr) return res.status(500).json({ message: "Error checking truck availability" });
+
+        if (truckResults[0].count > 0) {
+          return res.status(403).json({ 
+            message: "This truck is already booked for this slot. Please choose the other truck." 
+          });
+        }
+
+        // CREATE BOOKING - now includes truck_id
+        const insertSql = `
+          INSERT INTO bookings 
+          (customerId, lessonDate, startTime, endTime, status, truck_id)
+          VALUES (?, ?, ?, ?, 'booked', ?)
+        `;
+
+        db.query(insertSql, [customerId, bookingDate, startTime, endTime, truckId], (err, result) => {
+          if (err) return res.status(500).json({ message: "Error creating booking", error: err.message });
 
           // Update lessons used
           const updateSql = `UPDATE customers SET lessonsUsed = lessonsUsed + 1 WHERE customerId = ?`;
           db.query(updateSql, [customerId], (updateErr) => {
-            if (updateErr) {
-              console.error("Error updating lessons used:", updateErr);
-            }
+            if (updateErr) console.error("Error updating lessons used:", updateErr);
           });
 
           res.status(201).json({
@@ -196,11 +196,42 @@ router.post("/create", (req, res) => {
             bookingId: result.insertId,
             status: "booked"
           });
-        }
-      );
+        });
+      });
     });
   });
 });
+
+// Get available trucks for a specific date and time slot
+router.get("/available-trucks", (req, res) => {
+  const { lessonDate, startTime } = req.query;
+
+  if (!lessonDate || !startTime) {
+    return res.status(400).json({ message: "lessonDate and startTime are required" });
+  }
+
+  const sql = `
+    SELECT 
+      t.id as truckId,
+      t.number_plate,
+      CASE WHEN b.truck_id IS NOT NULL THEN false ELSE true END as isAvailable
+    FROM trucks t
+    LEFT JOIN bookings b 
+      ON t.id = b.truck_id 
+      AND b.lessonDate = ? 
+      AND b.startTime = ? 
+      AND b.status != 'cancelled'
+    WHERE t.is_active = true
+  `;
+
+  db.query(sql, [lessonDate, startTime], (err, results) => {
+    if (err) return res.status(500).json({ message: "Error fetching available trucks", error: err.message });
+
+    res.json(results);
+  });
+});
+
+
 // ========================
 // Get All Bookings (for staff)
 // ========================
