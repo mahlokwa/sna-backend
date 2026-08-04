@@ -17,7 +17,6 @@ db.getConnection((err, connection) => {
     console.error("Error connecting to MySQL:", err);
   } else {
     console.log("Connected to MySQL!");
-    //console.log('Connected to DB:', process.env.DB_HOST, process.env.DB_NAME);
     connection.release();
   }
 });
