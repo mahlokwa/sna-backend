@@ -143,23 +143,7 @@ router.post("/create", (req, res) => {
     const endMin = (totalMinutes % 60).toString().padStart(2, '0');
     const endTime = `${endHour}:${endMin}`;
 
-    // CHECK 1 - Has customer already booked on this day?
-    const sameDayCheckSql = `
-      SELECT COUNT(*) as count 
-      FROM bookings 
-      WHERE customerId = ? AND lessonDate = ? AND status != 'cancelled'
-    `;
-
-    db.query(sameDayCheckSql, [customerId, bookingDate], (dayErr, dayResults) => {
-      if (dayErr) return res.status(500).json({ message: "Error checking daily booking limit" });
-
-      if (dayResults[0].count > 0) {
-        return res.status(403).json({ 
-          message: "You already have a booking on this day. Only one booking per day is allowed." 
-        });
-      }
-
-      // CHECK 2 - Is the selected truck already booked for this slot?
+    // CHECK 2 - Is the selected truck already booked for this slot?
       const truckCheckSql = `
         SELECT COUNT(*) as count 
         FROM bookings 
@@ -175,28 +159,50 @@ router.post("/create", (req, res) => {
           });
         }
 
-        // CREATE BOOKING - now includes truck_id
-        const insertSql = `
-          INSERT INTO bookings 
-          (customerId, lessonDate, startTime, endTime, status, truck_id)
-          VALUES (?, ?, ?, ?, 'booked', ?)
+        // NEW - look up the instructor assigned to this truck
+        const truckInstructorSql = `
+          SELECT t.instructor_id, s.is_active
+          FROM trucks t
+          LEFT JOIN staff s ON t.instructor_id = s.staffId
+          WHERE t.id = ?
         `;
 
-        db.query(insertSql, [customerId, bookingDate, startTime, endTime, truckId], (err, result) => {
-          if (err) return res.status(500).json({ message: "Error creating booking", error: err.message });
+        db.query(truckInstructorSql, [truckId], (instrErr, instrResults) => {
+          if (instrErr) return res.status(500).json({ message: "Error checking truck instructor" });
 
-          // Update lessons used
-          const updateSql = `UPDATE customers SET lessonsUsed = lessonsUsed + 1 WHERE customerId = ?`;
-          db.query(updateSql, [customerId], (updateErr) => {
-            if (updateErr) console.error("Error updating lessons used:", updateErr);
-          });
+          if (instrResults.length === 0) {
+            return res.status(404).json({ message: "Truck not found" });
+          }
 
-          res.status(201).json({
-            message: "Booking created successfully",
-            bookingId: result.insertId,
-            status: "booked"
+          const { instructor_id, is_active } = instrResults[0];
+
+          if (!instructor_id || is_active === 0) {
+            return res.status(409).json({
+              message: "This truck currently has no active instructor assigned. Please choose another truck or contact us."
+            });
+          }
+
+          // CREATE BOOKING - now includes instructorId from the truck
+          const insertSql = `
+            INSERT INTO bookings 
+            (customerId, lessonDate, startTime, endTime, status, truck_id, instructorId)
+            VALUES (?, ?, ?, ?, 'booked', ?, ?)
+          `;
+
+          db.query(insertSql, [customerId, bookingDate, startTime, endTime, truckId, instructor_id], (err, result) => {
+            if (err) return res.status(500).json({ message: "Error creating booking", error: err.message });
+
+            const updateSql = `UPDATE customers SET lessonsUsed = lessonsUsed + 1 WHERE customerId = ?`;
+            db.query(updateSql, [customerId], (updateErr) => {
+              if (updateErr) console.error("Error updating lessons used:", updateErr);
+            });
+
+            res.status(201).json({
+              message: "Booking created successfully",
+              bookingId: result.insertId,
+              status: "booked"
+            });
           });
-        });
       });
     });
   });
@@ -488,6 +494,12 @@ router.put("/accept/:bookingId", (req, res) => {
             });
           }
 
+          if (Number(booking.instructorId) !== Number(instructorId)) {
+            return res.status(403).json({
+              message: "This booking is assigned to a different instructor."
+            });
+          }
+
           // 3️⃣ Check time conflict
           const conflictSql = `
             SELECT * FROM bookings
@@ -552,9 +564,15 @@ router.put("/accept/:bookingId", (req, res) => {
 
 
 // ========================
-// Get Available Bookings (for all instructors)
+// Get Available Bookings (for the assigned instructor)
 // ========================
 router.get("/available", (req, res) => {
+  const { instructorId } = req.query;
+
+  if (!instructorId) {
+    return res.status(400).json({ message: "instructorId is required" });
+  }
+
   const sql = `
     SELECT 
       b.bookingId,
@@ -568,11 +586,11 @@ router.get("/available", (req, res) => {
       TIMESTAMPDIFF(HOUR, b.createdAt, NOW()) as hoursAgo
     FROM bookings b
     JOIN customers c ON b.customerId = c.customerId
-    WHERE b.status = 'booked' AND b.instructorId IS NULL
+    WHERE b.status = 'booked' AND b.instructorId = ?
     ORDER BY b.lessonDate ASC, b.startTime ASC
   `;
 
-  db.query(sql, (err, results) => {
+  db.query(sql, [instructorId], (err, results) => {
     if (err) {
       return res.status(500).json({ message: "Database error" });
     }
